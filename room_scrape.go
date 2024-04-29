@@ -9,21 +9,15 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gocolly/colly"
+	"github.com/olekukonko/tablewriter"
 
 	"net/http"
 	"net/url"
-)
-
-const (
-	MONDAY    int = 0
-	TUESDAY   int = 1
-	WEDNESDAY int = 2
-	THURSDAY  int = 3
-	FRIDAY    int = 4
 )
 
 type Timetable struct {
@@ -65,6 +59,16 @@ func getTimeStamp() string {
 	return strings.Replace(strings.Replace(ts, ":", "_", -1), "-", "_", -1)
 }
 
+// https://stackoverflow.com/a/18203895/19020549
+func SliceIndex(limit int, predicate func(i int) bool) int {
+	for i := 0; i < limit; i++ {
+		if predicate(i) {
+			return i
+		}
+	}
+	return -1
+}
+
 func main() {
 	logPath := flag.String("logPath", "./room_scrape.log", "Path to log file")
 	debugMode := flag.Bool("debug", false, "Enable debug mode")
@@ -87,9 +91,14 @@ func main() {
 	// https://go-colly.org/docs/examples/coursera_courses/
 	// roomRegexp, _ := regexp.Compile("^IT.{3}$")
 	// roomRegexp, _ := regexp.Compile("^IT10[1|2]$")
+	// roomRegexp, _ := regexp.Compile("^IT1[0-9]{2}$")
 	roomRegexp, _ := regexp.Compile("^IT101$")
 
 	days := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
+	times := []string{"09:15", "10:15", "11:15", "12:15", "13:15", "14:15", "15:15", "16:15", "17:15"}
+	// TODO: Change to 0 in prod
+	// weekOffset := -1
+	weekOffset := 0
 
 	timetableList := []Timetable{}
 
@@ -125,7 +134,16 @@ func main() {
 			}
 		})
 
-		roomPostQueryParams.Add("CboWeeks", bodyElement.ChildAttr("select[name='CboWeeks'] > option[selected='selected']", "value"))
+		// roomPostQueryParams.Add("CboWeeks", "34") // This works btw
+		week := bodyElement.ChildAttr("select[name='CboWeeks'] > option[selected='selected']", "value")
+		weekInt, err := strconv.Atoi(week)
+		if err != nil {
+			slog.Error(err.Error())
+			slog.Error("Failed to convert week string to int", slog.String("week", week))
+			roomPostQueryParams.Add("CboWeeks", week)
+		} else {
+			roomPostQueryParams.Add("CboWeeks", strconv.Itoa(weekInt+weekOffset))
+		}
 
 		bodyElement.ForEach("select[name='CboLocation'] > option", func(_ int, roomOptionElement *colly.HTMLElement) {
 			roomName := roomOptionElement.Attr("value")
@@ -307,6 +325,8 @@ func main() {
 		slog.Info("JSON Marshal worked", slog.String("marshalledJson", string(marshalledJson)))
 	}
 
+	currentTime := getTimeStamp()
+
 	slog.Info("Printing JSON MarshalIndented freeRoomTable to stdout and saving to file")
 	marshalledIndentedJson, err := json.MarshalIndent(freeRoomTable, "", "  ")
 	if err != nil {
@@ -314,6 +334,49 @@ func main() {
 		slog.Error("Failed to JSON MarshalIndent freeRoomTable")
 	} else {
 		fmt.Println(string(marshalledIndentedJson))
-		os.WriteFile(fmt.Sprintf("./%s.json", getTimeStamp()), marshalledIndentedJson, 0644)
+		os.WriteFile(fmt.Sprintf("./%s_freeRoomTable.json", currentTime), marshalledIndentedJson, 0644)
 	}
+
+	slog.Info("Attempting to create ASCII table of freeRoomTable")
+
+	var multiTableWriter io.Writer
+	asciiFilename := fmt.Sprintf("./%s_ascii.txt", currentTime)
+
+	asciiTableFile, err := os.OpenFile(asciiFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		slog.Error(err.Error())
+		slog.Error("Failed to create ASCII table file, just using stdout", slog.String("failedFile", asciiFilename))
+		multiTableWriter = io.MultiWriter(os.Stdout)
+	} else {
+		multiTableWriter = io.MultiWriter(os.Stdout, asciiTableFile)
+	}
+
+	asciiTable := tablewriter.NewWriter(multiTableWriter)
+	asciiTable.SetHeader(append([]string{""}, days...))
+	asciiTable.SetRowLine(true)
+
+	asciiTableData := [][]string{}
+
+	for _, time := range times {
+		asciiTableData = append(asciiTableData, []string{time, "", "", "", "", ""})
+	}
+
+	slog.Info("Attempting to create rows of ASCII table")
+	for dayIdx, day := range days {
+		for freeTime, rooms := range freeRoomTable[day] {
+			indexOfTime := SliceIndex(len(times), func(i int) bool { return times[i] == freeTime })
+			if asciiTableData[indexOfTime][1+dayIdx] == "" {
+				asciiTableData[indexOfTime][1+dayIdx] += strings.Join(rooms, ", ")
+			} else {
+				asciiTableData[indexOfTime][1+dayIdx] += (", " + strings.Join(rooms, ", "))
+			}
+		}
+	}
+
+	for _, row := range asciiTableData {
+		asciiTable.Append(row)
+	}
+
+	slog.Info("Rendering ASCII table to stdout")
+	asciiTable.Render()
 }

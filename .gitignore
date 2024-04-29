@@ -1,2 +1,3 @@
 room_scrape.log
-*.json
+*ascii.txt
+*freeRoomTable.json
