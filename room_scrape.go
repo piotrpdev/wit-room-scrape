@@ -73,6 +73,12 @@ func setupLogger(filePath string, debugMode bool) (*os.File, error) {
 	return f1, nil
 }
 
+// https://gist.github.com/rustyeddy/77f17f4f0fb83cc87115eb72a23f18f7?permalink_comment_id=4069054#gistcomment-4069054
+func getTimeStamp() string {
+	ts := time.Now().UTC().Format(time.RFC3339)
+	return strings.Replace(strings.Replace(ts, ":", "_", -1), "-", "_", -1)
+}
+
 func main() {
 	logPath := flag.String("logPath", "./room_scrape.log", "Path to log file")
 	debugMode := flag.Bool("debug", false, "Enable debug mode")
@@ -344,13 +350,22 @@ func main() {
 		slog.Int("freeTimesCount", freeTimesCount))
 
 	// TODO: Print nice ASCII table to stdout (and file) <https://github.com/olekukonko/tablewriter>
-	// TODO: Print JSON (no indent) in slog
-	// TODO: Save data to JSON file
 	slog.Info("Printing JSON Marshalled freeRoomTable")
-	b, err := json.MarshalIndent(freeRoomTable, "", "  ")
+	marshalledJson, err := json.Marshal(freeRoomTable)
 	if err != nil {
 		slog.Error(err.Error())
 		slog.Error("Failed to JSON Marshal freeRoomTable")
+	} else {
+		slog.Info("JSON Marshal worked", slog.String("marshalledJson", string(marshalledJson)))
 	}
-	fmt.Println(string(b))
+
+	slog.Info("Printing JSON MarshalIndented freeRoomTable to stdout and saving to file")
+	marshalledIndentedJson, err := json.MarshalIndent(freeRoomTable, "", "  ")
+	if err != nil {
+		slog.Error(err.Error())
+		slog.Error("Failed to JSON MarshalIndent freeRoomTable")
+	} else {
+		fmt.Println(string(marshalledIndentedJson))
+		os.WriteFile(fmt.Sprintf("./%s.json", getTimeStamp()), marshalledIndentedJson, 0644)
+	}
 }
