@@ -26,27 +26,13 @@ const (
 	FRIDAY    int = 4
 )
 
-// TODO: use weekday strings instead of struct keys
 type Timetable struct {
 	Error     bool
 	Empty     bool // Sanity check
 	Date      string
 	Room      string
 	Week      string
-	Monday    []string
-	Tuesday   []string
-	Wednesday []string
-	Thursday  []string
-	Friday    []string
-}
-
-// [Monday, Tuesday] - [17:15, 18:15] - [IT101, IT102]
-type FreeRoomTable struct {
-	Monday    map[string][]string
-	Tuesday   map[string][]string
-	Wednesday map[string][]string
-	Thursday  map[string][]string
-	Friday    map[string][]string
+	FreeTimes map[string][]string
 }
 
 const roomTimetableUrl = "http://studentssp.wit.ie/Timetables/RoomTT.aspx"
@@ -182,7 +168,7 @@ func main() {
 
 		// TODO: Sanity check the column titles are as expected
 
-		timetable := Timetable{Error: false, Empty: true}
+		timetable := Timetable{Error: false, Empty: true, FreeTimes: make(map[string][]string)}
 
 		tableContainerElement.ForEach("table:nth-child(1)", func(_ int, headerElement *colly.HTMLElement) {
 			slog.Debug("Found header")
@@ -248,16 +234,8 @@ func main() {
 				case -1:
 					slog.Error("'currentDay' switch got '-1'")
 					timetable.Error = true
-				case MONDAY:
-					timetable.Monday = append(timetable.Monday, time)
-				case TUESDAY:
-					timetable.Tuesday = append(timetable.Tuesday, time)
-				case WEDNESDAY:
-					timetable.Wednesday = append(timetable.Wednesday, time)
-				case THURSDAY:
-					timetable.Thursday = append(timetable.Thursday, time)
-				case FRIDAY:
-					timetable.Friday = append(timetable.Friday, time)
+				default:
+					timetable.FreeTimes[days[currentDay]] = append(timetable.FreeTimes[days[currentDay]], time)
 				}
 			})
 		})
@@ -288,7 +266,7 @@ func main() {
 	freeTimesCount := 0
 	timetableCount := 0
 	// [Monday, Tuesday] - [17:15, 18:15] - [IT101, IT102]
-	freeRoomTable := FreeRoomTable{}
+	freeRoomTable := make(map[string]map[string][]string)
 
 	for _, timetable := range timetableList {
 		timetableCount++
@@ -302,44 +280,14 @@ func main() {
 			emptyTimetableCount++
 		}
 
-		for _, time := range timetable.Monday {
-			freeTimesCount++
-			if freeRoomTable.Monday == nil {
-				freeRoomTable.Monday = map[string][]string{}
+		for _, day := range days {
+			for _, time := range timetable.FreeTimes[day] {
+				freeTimesCount++
+				if freeRoomTable[day] == nil {
+					freeRoomTable[day] = map[string][]string{}
+				}
+				freeRoomTable[day][time] = append(freeRoomTable[day][time], timetable.Room)
 			}
-			freeRoomTable.Monday[time] = append(freeRoomTable.Monday[time], timetable.Room)
-		}
-
-		for _, time := range timetable.Tuesday {
-			freeTimesCount++
-			if freeRoomTable.Tuesday == nil {
-				freeRoomTable.Tuesday = map[string][]string{}
-			}
-			freeRoomTable.Tuesday[time] = append(freeRoomTable.Tuesday[time], timetable.Room)
-		}
-
-		for _, time := range timetable.Wednesday {
-			freeTimesCount++
-			if freeRoomTable.Wednesday == nil {
-				freeRoomTable.Wednesday = map[string][]string{}
-			}
-			freeRoomTable.Wednesday[time] = append(freeRoomTable.Wednesday[time], timetable.Room)
-		}
-
-		for _, time := range timetable.Thursday {
-			freeTimesCount++
-			if freeRoomTable.Thursday == nil {
-				freeRoomTable.Thursday = map[string][]string{}
-			}
-			freeRoomTable.Thursday[time] = append(freeRoomTable.Thursday[time], timetable.Room)
-		}
-
-		for _, time := range timetable.Friday {
-			freeTimesCount++
-			if freeRoomTable.Friday == nil {
-				freeRoomTable.Friday = map[string][]string{}
-			}
-			freeRoomTable.Friday[time] = append(freeRoomTable.Friday[time], timetable.Room)
 		}
 	}
 
