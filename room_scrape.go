@@ -17,11 +17,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"os"
 	"regexp"
 	"slices"
@@ -85,6 +87,80 @@ func SliceIndex(limit int, predicate func(i int) bool) int {
 	return -1
 }
 
+// https://stackoverflow.com/a/20397167/19020549
+func Upload(url string, values map[string]io.Reader) (err error) {
+	// Prepare a form that you will submit to that URL.
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	for key, r := range values {
+		var fw io.Writer
+		if x, ok := r.(io.Closer); ok {
+			defer x.Close()
+		}
+		// Add an image file
+		if x, ok := r.(*os.File); ok {
+			if fw, err = w.CreateFormFile(key, x.Name()); err != nil {
+				return
+			}
+		} else {
+			// Add other fields
+			if fw, err = w.CreateFormField(key); err != nil {
+				return
+			}
+		}
+		if _, err = io.Copy(fw, r); err != nil {
+			return err
+		}
+
+	}
+	// Don't forget to close the multipart writer.
+	// If you don't close it, your request will be missing the terminating boundary.
+	w.Close()
+
+	// Now that you have a form, you can submit it to your handler.
+	req, err := http.NewRequest("POST", url, &b)
+	if err != nil {
+		return
+	}
+	// Don't forget to set the content type, this will contain the boundary.
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	// Submit the request
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+
+	// Check the response
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusNoContent {
+		err = fmt.Errorf("bad status: %s", res.Status)
+	}
+	return
+}
+
+func sendAsciiFileToWebhook(asciiTable string, webhookUrl string) {
+	// TODO: Convert to image because file is too large for Discord
+	// `https://stackoverflow.com/a/38300583/19020549`
+
+	var sb strings.Builder
+	sb.WriteString("```")
+	sb.WriteString(asciiTable)
+	sb.WriteString("```")
+
+	values := map[string]io.Reader{
+		"username":   strings.NewReader("Peter's Room Checker Bot"),
+		"avatar_url": strings.NewReader("https://i.imgur.com/oBPXx0D.png"),
+		"content":    strings.NewReader(sb.String()),
+	}
+
+	err := Upload(webhookUrl, values)
+	if err != nil {
+		slog.Error(err.Error())
+		slog.Error("Failed to send asciiTable to webhook")
+		os.Exit(1)
+	}
+}
+
 func main() {
 	logPath := flag.String("logPath", "./room_scrape.log", "Path to log file")
 	debugMode := flag.Bool("debug", false, "Enable debug mode")
@@ -107,8 +183,8 @@ func main() {
 	// https://go-colly.org/docs/examples/coursera_courses/
 	// roomRegexp, _ := regexp.Compile("^IT.{3}$")
 	// roomRegexp, _ := regexp.Compile("^IT10[1|2]$")
-	// roomRegexp, _ := regexp.Compile("^IT1[0-9]{2}$")
-	roomRegexp, _ := regexp.Compile("^IT101$")
+	roomRegexp, _ := regexp.Compile("^IT1[0-9]{2}$")
+	// roomRegexp, _ := regexp.Compile("^IT101$")
 
 	days := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
 	times := []string{"09:15", "10:15", "11:15", "12:15", "13:15", "14:15", "15:15", "16:15", "17:15"}
@@ -193,6 +269,7 @@ func main() {
 	initCollector.OnError(func(r *colly.Response, err error) {
 		slog.Error(err.Error())
 		slog.Error("Getting required metadata failed", slog.String("URL", r.Request.URL.String()), slog.Any("response", r))
+		os.Exit(1)
 	})
 
 	roomCollector.OnHTML("div#divTT", func(tableContainerElement *colly.HTMLElement) {
@@ -288,6 +365,7 @@ func main() {
 	roomCollector.OnError(func(r *colly.Response, err error) {
 		slog.Error(err.Error())
 		slog.Error("Requesting room failed", slog.String("URL", r.Request.URL.String()), slog.Any("response", r))
+		os.Exit(1)
 	})
 
 	initCollector.Visit(roomTimetableUrl)
@@ -337,6 +415,7 @@ func main() {
 	if err != nil {
 		slog.Error(err.Error())
 		slog.Error("Failed to JSON Marshal freeRoomTable")
+		os.Exit(1)
 	} else {
 		slog.Info("JSON Marshal worked", slog.String("marshalledJson", string(marshalledJson)))
 	}
@@ -348,6 +427,7 @@ func main() {
 	if err != nil {
 		slog.Error(err.Error())
 		slog.Error("Failed to JSON MarshalIndent freeRoomTable")
+		os.Exit(1)
 	} else {
 		fmt.Println(string(marshalledIndentedJson))
 		os.WriteFile(fmt.Sprintf("./%s_freeRoomTable.json", currentTime), marshalledIndentedJson, 0644)
@@ -355,16 +435,17 @@ func main() {
 
 	slog.Info("Attempting to create ASCII table of freeRoomTable")
 
+	var asciiTableBuffer strings.Builder
 	var multiTableWriter io.Writer
 	asciiFilename := fmt.Sprintf("./%s_ascii.txt", currentTime)
 
-	asciiTableFile, err := os.OpenFile(asciiFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	asciiTableFile, err := os.OpenFile(asciiFilename, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		slog.Error(err.Error())
 		slog.Error("Failed to create ASCII table file, just using stdout", slog.String("failedFile", asciiFilename))
-		multiTableWriter = io.MultiWriter(os.Stdout)
+		multiTableWriter = io.MultiWriter(os.Stdout, &asciiTableBuffer)
 	} else {
-		multiTableWriter = io.MultiWriter(os.Stdout, asciiTableFile)
+		multiTableWriter = io.MultiWriter(os.Stdout, &asciiTableBuffer, asciiTableFile)
 	}
 
 	asciiTable := tablewriter.NewWriter(multiTableWriter)
@@ -395,4 +476,10 @@ func main() {
 
 	slog.Info("Rendering ASCII table to stdout")
 	asciiTable.Render()
+
+	// webhookUrl := os.Getenv("DISCORD_WEBHOOK_URL")
+
+	// if len(webhookUrl) > 0 {
+	// 	sendAsciiFileToWebhook(asciiTableBuffer.String(), webhookUrl)
+	// }
 }
